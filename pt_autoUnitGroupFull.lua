@@ -11,7 +11,7 @@
 
 function widget:GetInfo()
     return {
-        name = "Auto unit groups V2",
+        name = "Auto unit groups V1",
         desc = "Automatically sends support units such as jummer, radar etc with guar command to closest units.",
         author = "Dmitry P",
         date = "June 2024",

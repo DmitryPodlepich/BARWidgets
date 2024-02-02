@@ -1,6 +1,6 @@
 function widget:GetInfo()
     return {
-        name = "Auto Retreat Mine",
+        name = "Auto Retreat Patrol",
         desc = "Retreats units to designated location on low HP",
         author = "PureTilt",
         date = "June 2023",
