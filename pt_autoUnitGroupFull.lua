@@ -32,15 +32,13 @@ local supportUnitType = { RADAR =  "RADAR", JUMMER = "JUMMER", GROUND_AA = "GROU
 local supportUnits = {}
 
 local unitsGroups = {}
-local unitsGroupMemberStates = { WAITING = "WAITING", ONPATROL = "ONPATROL" }
+--local unitsGroupMemberStates = { WAITING = "WAITING", ONPATROL = "ONPATROL" }
 
 local factoriesAllowedToCreateGroups = {}
 
-local selectedUnits = Spring.GetSelectedUnits()
-
--- function widget:Initialize()
--- 	Spring.Echo("BBB");
--- end
+function widget:Initialize()
+	Spring.Echo("V3");
+end
 
 function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, userOrders)
 
@@ -96,7 +94,7 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
 	--Create units groups--
 	if(IsFactoryExperimental(factDefID)) then return end
 
-	local factoryCommands = Spring.GetUnitCommands(factID, 100)
+	local factoryCommands = Spring.GetUnitCommands(factID, 1000)
 
 	local buildQueueSize = GetFactoryBuildQueueGroupSize(factID);
 
@@ -109,21 +107,22 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
 			unitsGroups[factID] = { units = {}}
 		end
 
+		unitsGroups[factID].units[unitID] = { unitDefID = unitDefID}
+
 		Spring.GiveOrderToUnit(unitID, CMD.GUARD, {factID}, {})
 
-		unitsGroups[factID].units[unitID] = { unitDefID = unitDefID, unitState = unitsGroupMemberStates.WAITING}
-
 		local unitsCountInCurrentGroup = GetTablelength(unitsGroups[factID].units);
-
-		Spring.Echo("buildQueueSize: ".. buildQueueSize);
-		Spring.Echo("unitsCountInCurrentGroup: ".. unitsCountInCurrentGroup)
 
 		-- Release units group and allow them to patrol
 		if(unitsCountInCurrentGroup >= buildQueueSize) then
 
+			--Spring.Echo("buildQueueSize: ".. buildQueueSize);
+			--Spring.Echo("unitsCountInCurrentGroup: ".. unitsCountInCurrentGroup)
+			print("unitsGroups[factID].units: "..dumpObject(unitsGroups[factID].units))
+
 			for wUnitID, wUnitData in pairs(unitsGroups[factID].units) do
 
-				if(supportUnits[wUnitID] == nil and wUnitData.unitState == unitsGroupMemberStates.WAITING) then
+				--if(wUnitData.unitState == unitsGroupMemberStates.WAITING) then
 					for i, cmd in ipairs(factoryCommands) do
 						
 						local cmdType = cmd.id
@@ -131,16 +130,12 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
 						local cmdOptions = cmd.options
 
 						Spring.GiveOrderToUnit(wUnitID, cmdType, cmdParams, cmdOptions)
+						unitsGroups[factID].units[wUnitID] = nil
 					end
-
-					---wUnitData.unitState = unitsGroupMemberStates.ONPATROL
-				end
+				--end
 			end
-
-			unitsGroups[factID].units = {}
 		end
 	end
-
 end
 
 function widget:UnitDestroyed(unitID, unitDefID, teamID)
@@ -181,7 +176,7 @@ end
 
 function widget:CommandNotify(commandId, params, options)
 
-	--Spring.Echo("CMD.REPEAT: "..tostring(CMD.REPEAT).."commandId: ".. commandId .. " params: ".. dumpObject(params))
+	local selectedUnits = Spring.GetSelectedUnits()
 
 	for i = 1, #selectedUnits do
 
@@ -198,9 +193,16 @@ function widget:CommandNotify(commandId, params, options)
 		if(UnitDefs[selectedUnitDefId].isFactory and commandId == CMD.REPEAT and params) then
 			if(params[1] == 1) then
 				factoriesAllowedToCreateGroups[selectedUnitId] = {}
+				Spring.Echo("Allowed FactoryID: "..selectedUnitId)
 			else
 				factoriesAllowedToCreateGroups[selectedUnitId] = nil
+				Spring.Echo("Disallowed FactoryID: "..selectedUnitId)
 			end
+		end
+
+		--ToDo if user pushs clear queue then we release all units from unitsGroups related to that factory  
+		if(UnitDefs[selectedUnitDefId].isFactory and commandId == CMD.CLEARQUEU) then
+			
 		end
 
 		--If player gives any order to support unit then we dont use that unit in our widget anymore.
@@ -210,12 +212,12 @@ function widget:CommandNotify(commandId, params, options)
 
 		--If player orders support unit to guard a TECH2 or Experimental factory
 		-- then we mark this unit as waiting
-		if(supportUnits[selectedUnitId] == nil and params and params[1] and commandId ==  CMD.GUARD and IsSupportUnit(selectedUnitDefId)) then
+		if(supportUnits[selectedUnitId] == nil and params and params[1] and commandId ==  CMD.GUARD and IsSupportUnit(selectedUnitDefId) and not IsBuilder(selectedUnitDefId)) then
 			local commandTargetUnitId = params[1];
 
 			local commandTargetUnitDefId = Spring.GetUnitDefID(commandTargetUnitId)
 
-			if(IsFactoryTech2OrExperimental(commandTargetUnitDefId)) then
+			if(IsFactoryTech2OrExperimental(commandTargetUnitDefId) and IsInPatrol(commandTargetUnitId)) then
 				
 				local unitSupportType = GetSupportUnitType(selectedUnitDefId)
 
@@ -224,10 +226,6 @@ function widget:CommandNotify(commandId, params, options)
 			end
 		end
 	end
-end
-
-function widget:SelectionChanged(sel)
-	selectedUnits = sel
 end
 
 function widget:GameFrame(frame)
