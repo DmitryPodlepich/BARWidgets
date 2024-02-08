@@ -7,8 +7,10 @@
 --Scheduled features--
 --Make units groups travel with the same speed. (Probably we need to add { "Ctrl" } to the command options...)
 
-VFS.Include("unbaconfigs/buildoptions.lua")
-VFS.Include("luarules/configs/customcmds.h.lua")
+--VFS.Include("unbaconfigs/buildoptions.lua")
+--VFS.Include("luarules/configs/customcmds.h.lua")
+VFS.Include("gamedata/movedefs.lua")
+VFS.Include("gamedata/moveDefs.lua")
 
 function widget:GetInfo()
     return {
@@ -34,6 +36,10 @@ local factoriesAllowedToCreateGroups = {}
 
 function widget:Initialize()
 	Spring.Echo("Units groups gutomation V1 initialized!");
+
+	if Spring.moveDefs then
+		Spring.Echo("MoveCtrl loaded!");
+	end
 end
 
 function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, userOrders)
@@ -126,6 +132,11 @@ function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
 end
 
 function widget:UnitCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOptions)
+
+	--Spring.Echo("Spring.MoveCtrl: "..dumpObject(Spring))
+	--Spring.Echo("Spring: "..dumpObject(Spring))
+	--Spring.Echo("cmdID: "..dumpObject(cmdID).." cmdParams: "..dumpObject(cmdParams).." cmdOptions: "..dumpObject(cmdOptions))
+
 	if(myTeamId ~= teamID) then return end
 
 	if(UnitDefs[unitDefID].isFactory and cmdID == CMD.REPEAT and cmdParams) then
@@ -153,6 +164,8 @@ function SetFactoryCommandsToUnitsGroup(factID)
 
 	local unitsArray = {}
 
+	local orderArray = {}
+
 	local factoryCommands = Spring.GetUnitCommands(factID, 1000)
 
 	local minSpeed = GetMinimumUnitsMoveSpeed(unitsGroups[factID].units)
@@ -165,31 +178,47 @@ function SetFactoryCommandsToUnitsGroup(factID)
 		if(math.huge ~= minSpeed) then
 			local currentSpeed = Spring.GetUnitMoveTypeData(wUnitID)
 
-			--Spring.Echo("currentSpeed: "..dumpObject(currentSpeed))
-
 			--Spring.MoveCtrl.SetGroundMoveTypeData(wUnitID, "maxSpeed", minSpeed)
 			--Spring.MoveCtrl.SetGroundMoveTypeData(wUnitID, { maxSpeed = minSpeed, turnRate = currentSpeed.turnRate, slopeMod = currentSpeed.slopeMod })
 		end
+
+		--ERROR call SetUnitMoveGoal a nil 
+		-- for i, cmd in ipairs(factoryCommands) do
+		-- 	if(cmd.id == CMD.MOVE or cmd.id == CMD.PATROL) then
+		-- 		if(cmd.params and cmd.params[1] and cmd.params[2] and cmd.params[3]) then
+		-- 			Spring.SetUnitMoveGoal(wUnitID, cmd.params[1], cmd.params[2], cmd.params[3], minSpeed)
+		-- 		end
+		-- 	end
+		-- end
 
 		unitsGroups[factID].units[wUnitID] = nil
 	end
 
 	for i, cmd in ipairs(factoryCommands) do
-				
-		local cmdType = cmd.id
-		local cmdParams = cmd.params
 		local cmdOptions = cmd.options
 
 		cmdOptions["ctrl"] = true
-		--cmdOptions["coded"] = 96
-		--cmdOptions["right"] = true
-		--cmdOptions["alt"] = true
-		--table.insert(cmdOptions, "alt")
+		--cmdOptions["shift"] = true
+		cmdOptions["right"] = true
+		cmdOptions["alt"] = true
 
-		--Spring.Echo("cmdOptions: ".. dumpObject(cmdOptions));
+		local coded = 0
 
-		Spring.GiveOrderToUnitArray(unitsArray, cmdType, cmdParams, cmdOptions)
+		if cmdOptions["alt"]  then coded = coded + CMD.OPT_ALT   end
+		if cmdOptions["ctrl"]  then coded = coded + CMD.OPT_CTRL  end
+		if cmdOptions["meta"]  then coded = coded + CMD.OPT_META  end
+		if cmdOptions["shift"] then coded = coded + CMD.OPT_SHIFT end
+		if cmdOptions["right"] then coded = coded + CMD.OPT_RIGHT end
+
+		cmdOptions.coded = coded
+
+		local order = { cmd.id, cmd.params, cmdOptions }
+		table.insert(orderArray, order)
 	end
+
+	--Spring.Echo("orderArray: "..dumpObject(orderArray))
+
+	Spring.GiveOrderArrayToUnitArray(unitsArray, orderArray)
 end
 
 function GetMinimumUnitsMoveSpeed(unitsGroups)
