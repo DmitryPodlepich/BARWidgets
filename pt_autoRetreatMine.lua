@@ -36,7 +36,7 @@ local markerOnlyOnSelected = false
 local printOutAmountOfIgnoredOnChange = true
 
 local myTeam = Spring.GetMyTeamID()
-local retreatingUnits = {}
+local allBuildedUnits = {}
 local retreatingUnitsWithCommands = {}
 local unitGroup = {}
 local probedDefs = {}
@@ -85,7 +85,7 @@ end
 
 function widget:Initialize()
 
-    Spring.Echo("Auto Retreat my3")
+    Spring.Echo("Auto retreat patrol")
 
     Spring.SendCommands({
     "bind                  /  setRetreatPoint",
@@ -131,6 +131,69 @@ function dumpObject(o)
     end
  end
 
+function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, userOrders)
+
+    if( IsBuilder(unitDefID) ) then return end
+
+    local unitCommands = Spring.GetUnitCommands(unitID, 1000);
+    allBuildedUnits[unitID] = { unitDefID = unitDefID, previousCommand = unitCommands }
+
+end
+
+function widget:UnitCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOptions)
+	if(teamID ~= spGetMyTeamID()) then return end
+
+    if( IsBuilder(unitDefID) ) then return end
+
+    --Forget unit if that unit just received an order from player.
+    if(retreatingUnitsWithCommands[unitID]) then
+        -- If unit just got an order during his way to retreat point. Or during healing but healing was not completed.
+        if (retreatingUnitsWithCommands[unitID].retreating) then
+            if(cmdID ~= CMD.MOVE or (cmdID == CMD.MOVE and cmdParams and (cmdParams[1] ~= gatherPoint[1] or cmdParams[2] ~= gatherPoint[2] or cmdParams[3] ~= gatherPoint[3] ))) then
+                allBuildedUnits[unitID] = nil
+                retreatingUnitsWithCommands[unitID] = nil
+                return
+            end
+        end
+
+        --If unit just got an order after it has been healed. Or unit already returned on its patrol route. Or unit just got an order when it was standing on a gather point.
+        if(not retreatingUnitsWithCommands[unitID].retreating) then
+            
+            --If that command does not exist in the initial unit order commands list. It means that it is a new order and we need to forger unit initial patrol route.
+            if(allBuildedUnits[unitID] and allBuildedUnits[unitID].previousCommand and not IsCommandExistInInitialCommands(unitID, cmdID, cmdParams)) then
+                allBuildedUnits[unitID] = nil
+                retreatingUnitsWithCommands[unitID] = nil
+                --Spring.Echo("["..currentTime.."]".."Forget unit line 165: "..unitID)
+            end
+        end
+    end
+
+    --If unit just got a new patrol order from user. Save new patrol route to as initial.
+    -- if(cmdID == CMD.PATROL and allBuildedUnits[unitID] == nil and retreatingUnitsWithCommands[unitID] == nil) then
+    --     local unitCommands = Spring.GetUnitCommands(unitID, 1000);
+    --     allBuildedUnits[unitID] = { unitDefID = unitDefID, previousCommand = unitCommands }
+    --     Spring.Echo("["..currentTime.."]".."Save new inilial patrol route for unit: "..unitID)
+    -- end
+end
+
+function IsCommandExistInInitialCommands(unitID, cmdID, cmdParams)
+
+    for i, cmd in ipairs(allBuildedUnits[unitID].previousCommand) do
+        
+        if(cmd.id == cmdID and cmdParams and cmd.params) then
+            
+            if(cmd.id == CMD.MOVE or cmd.id == CMD.PATROL) then
+                
+                if(cmdParams[1] == cmd.params[1] and cmdParams[2] == cmd.params[2] and cmdParams[3] == cmd.params[3]) then
+                    return true
+                end
+            end
+        end
+    end
+
+    return false
+end
+
 function widget:UnitDamaged(unitID, unitDefID, unitTeam, damage, paralyzer, weaponDefID, projectileID, attackerID, attackerDefID, attackerTeam)
     if (unitTeam ~= spGetMyTeamID()) then
         return
@@ -142,26 +205,32 @@ function widget:UnitDamaged(unitID, unitDefID, unitTeam, damage, paralyzer, weap
     local curHealth, maxHealth = GetUnitHealth(unitID)
 
     if gatherPoint then
-        if not retreatingUnitsWithCommands[unitID] then
-            if IsInPatrol(unitID) and curHealth / maxHealth <= retreatThreshold then
-                --local x, y, z = GetUnitPosition(unitID)
+        if (not retreatingUnitsWithCommands[unitID] or not retreatingUnitsWithCommands[unitID].retreating) and IsInPatrol(unitID) then
+            if curHealth / maxHealth <= retreatThreshold then
+
                 -- deselect retreating unit
                 local selectedUnits = GetSelectedUnits()
                 for index, ID in pairs(selectedUnits) do
-                    --Echo(index, ID)
                     if ID == unitID then
                         selectedUnits[index] = nil
                         break
                     end
                 end
 
-                local unitCommands = Spring.GetUnitCommands(unitID, 100);
+                local unitCurrentCommands = {}
 
                 Spring.SelectUnitArray(selectedUnits, false)
 
+                --Get initial unit patrol commands. To send unit on patrol according to the same sequence as it was initially.
+                if(allBuildedUnits[unitID]) then
+                    unitCurrentCommands = allBuildedUnits[unitID].previousCommand  
+                else
+                    unitCurrentCommands = Spring.GetUnitCommands(unitID, 1000);
+                end
+
                 unitGroup[unitID] = Spring.GetUnitGroup(unitID)
-                retreatingUnitsWithCommands[unitID] = {retreating = true, previousCommand = unitCommands}
-                Spring.GiveOrderToUnit(unitID, CMD.MOVE, { gatherPoint[1], gatherPoint[2], gatherPoint[3] }, { "space" })
+                retreatingUnitsWithCommands[unitID] = {retreating = true, previousCommand = unitCurrentCommands}
+                Spring.GiveOrderToUnit(unitID, CMD.MOVE, { gatherPoint[1], gatherPoint[2], gatherPoint[3] }, {})
                 SetUnitGroup(unitID, -1)
             end
         end
@@ -171,6 +240,7 @@ end
 function widget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam)
     ignoredUnits[unitID] = nil
     retreatingUnitsWithCommands[unitID] = nil
+    allBuildedUnits[unitID] = nil
 end
 
 local frameCount = 0
@@ -211,40 +281,29 @@ function widget:GameFrame(gameFrame)
                     end
                     
                     if returnAfterRetreatOn then
-                        local indexPatrol = 0
+
+                        retreatingUnitsWithCommands[unitID].retreating = false
 
                         for i, cmd in ipairs(data.previousCommand) do
                             local cmdType = cmd.id
                             local cmdParams = cmd.params
-                            
-                            -- Process the command type and parameters as needed
-                            -- You can use the cmdType and cmdParams to determine the current order
-                            
-                            if cmdType == CMD.PATROL then
-                                --print("Index:" ..indexPatrol.. " is " .. cmdType, cmdParams[1], cmdParams[2], cmdParams[3])
-                                --Spring.Echo("Index:" ..indexPatrol.. " is " .. cmdType, cmdParams[1], cmdParams[2], cmdParams[3])
-                                --Spring.GiveOrderToUnit(unitID, CMD.INSERT,{-1, CMD.PATROL, CMD.OPT_SHIFT, cmdParams},{"shift"});
-                                local keyParam = {}
+                            local cmdOptions = cmd.options
 
-                                if(indexPatrol > 0) then keyParam =  {"shift"} end
-
-                                Spring.GiveOrderToUnit(unitID, cmdType, cmdParams, keyParam)
-                                indexPatrol = indexPatrol + 1
-                            end
-
-                            --Spring.GiveOrderToUnit(unitID, cmdType, cmd.params, {"shift"})
-
-                            
+                            Spring.GiveOrderToUnit(unitID, cmdType, cmdParams, cmdOptions)
                         end
-                        --local origPos = data.origPos
-                        --Spring.GiveOrderToUnit(unitID, CMD.INSERT, data.previousCommand[0], {})
                     end
-
-                    retreatingUnitsWithCommands[unitID] = nil
                 end
             end
         end
     end
+end
+
+function IsBuilder(unitDefID)
+	local unitDef = UnitDefs[unitDefID]
+	return unitDef.isBuilder
+	or (unitDef.canReclaim and unitDef.reclaimSpeed > 0)
+	or (unitDef.canResurrect and unitDef.resurrectSpeed > 0)
+	or (unitDef.canRepair and unitDef.repairSpeed > 0) or (unitDef.buildOptions and unitDef.buildOptions[1])
 end
 
 function IsInPatrol(unitID)
@@ -319,7 +378,7 @@ end
 function ReturnAfterRetreat()
     -- toggle return after retreat behavior
     returnAfterRetreatOn = not returnAfterRetreatOn
-    Echo("Return after retreat: " .. tostring(returnAfterRetreatOn))
+    --Echo("Return after retreat: " .. tostring(returnAfterRetreatOn))
 end
 
 function IgnoreSelectedUnits()
@@ -477,4 +536,10 @@ function widget:DrawWorldPreUnit()
 
         glPopMatrix()
     end
+end
+
+function GetTablelength(T)
+	local count = 0
+	for _ in pairs(T) do count = count + 1 end
+	return count
 end
