@@ -9,12 +9,14 @@
 
 --VFS.Include("unbaconfigs/buildoptions.lua")
 --VFS.Include("luarules/configs/customcmds.h.lua")
-VFS.Include("gamedata/movedefs.lua")
-VFS.Include("gamedata/moveDefs.lua")
+--VFS.Include("gamedata/movedefs.lua")
+--VFS.Include("gamedata/moveDefs.lua")
+
+local widgetName = "Units groups automation V1"
 
 function widget:GetInfo()
     return {
-        name = "Units groups automation V1",
+        name = widgetName,
         desc = "Prevent NOT support units to go on patrol before factory build queue will be completed. After units build queue is completed release all group and send them all on a patrol as a group.",
         author = "Dmitry P",
         date = "February 2024",
@@ -30,17 +32,13 @@ local myTeamId = Spring.GetMyTeamID()
 local clearQueueCommandId = 5
 
 local unitsGroups = {}
-local unitsStates = { WAITING = "WAITING", ONPATROL = "ONPATROL", RETREATING = "RETREATING" }
+local unitsStates = { WAITING = "WAITING", ONPATROL = "ONPATROL", ATTACKING = "ATTACKING", RETREATING = "RETREATING" }
 local unitsStatuses = { UNDEFINED = "UNDEFINED", FRONTLINE = "FRONTLINE", REARLINE = "REARLINE" }
 
 local factoriesAllowedToCreateGroups = {}
 
 function widget:Initialize()
-	Spring.Echo("Units groups gutomation V1 initialized!");
-
-	if Spring.moveDefs then
-		Spring.Echo("MoveCtrl loaded!");
-	end
+	Spring.Echo(widgetName.." inilialized...");
 end
 
 function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, userOrders)
@@ -54,8 +52,6 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
 	--Prevent creating groups od experimental units
 	if(IsFactoryExperimental(factDefID)) then return end
 
-	--Spring.Echo("GetUnitMoveTypeData: "..dumpObject(Spring.GetUnitMoveTypeData(unitID)))
-
 	local buildQueueSize = GetFactoryBuildQueueGroupSize(factID);
 
 	--Create units group only if there are more than 1 NOT support unit in a factory build queue
@@ -67,7 +63,7 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
 		end
 
 		if(GetTablelength(unitsGroups[factID]) == 0) then
-			table.insert(unitsGroups[factID], { units = {}, frontLineUnits = {}, initialCount = buildQueueSize })
+			table.insert(unitsGroups[factID], { units = {}, initialCount = buildQueueSize })
 		end
 		
 		local lastGroupIndex = #unitsGroups[factID];
@@ -76,7 +72,7 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
 
 		--Spring.Echo("GetTablelength(lastGroup.units): "..GetTablelength(lastGroup.units).." lastGroup.initialCount: "..lastGroup.initialCount)
 
-		if( GetTablelength(lastGroup.units) < buildQueueSize) then
+		if( GetTablelength(lastGroup.units) < lastGroup.initialCount) then
 
 			Spring.GiveOrderToUnit(unitID, CMD.GUARD, {factID}, {})
 
@@ -96,7 +92,7 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
 			-- Release units group and allow them to patrol
 			SetFactoryCommandsToUnitsGroup(factID)
 			
-			table.insert(unitsGroups[factID], { units = {}, frontLineUnits = {}, initialCount = buildQueueSize })
+			table.insert(unitsGroups[factID], { units = {}, initialCount = buildQueueSize })
 		end
 	end
 end
@@ -163,9 +159,8 @@ end
 function widget:CommandNotify(commandId, params, options)
 end
 
-function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
-end
-
+--ToDo: if user commands units which are waiting for group assembly then forget about those units.
+--ToDo: if user commands units which are in patrol as group and have a front line status then forget about those units.
 function widget:UnitCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOptions)
 
 	if(myTeamId ~= teamID) then return end
@@ -189,6 +184,63 @@ function widget:UnitCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOpti
 end
 
 function widget:GameFrame(frame)
+	if frame % 30 > 0 then return end
+
+	for factoryID, factoryUnitGroups in pairs(unitsGroups) do
+		
+		for groupIndex, unitsGroup in ipairs(factoryUnitGroups) do
+			
+			for unitID, unitData in pairs(unitsGroup.units) do
+				
+				if(unitData.unitStatus == unitsStatuses.FRONTLINE) then
+
+					local targetType, _, targetUnitID = Spring.GetUnitWeaponTarget(unitID, 1)
+
+					for rareLineUnitID, unitData in pairs(unitsGroup.units) do
+
+						if(unitData.unitStatus == unitsStatuses.REARLINE and unitData.rearLineGuardTargetID == unitID) then
+
+							if(targetUnitID and Spring.ValidUnitID(targetUnitID) and not Spring.GetUnitIsDead(targetUnitID)) then
+
+								if(not UnitHasCommand(rareLineUnitID, CMD.ATTACK, targetUnitID)) then
+
+									local commandResult = Spring.GiveOrderToUnit(rareLineUnitID, CMD.INSERT,{-1, CMD.ATTACK, CMD.OPT_SHIFT, targetUnitID}, {});
+									if(commandResult) then
+										--Spring.Echo("Spring.GiveOrderToUnit CMD.ATTACK: "..dumpObject(targetUnitID))
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+function UnitHasCommand(unitID, cmdID, cmdParams)
+
+	local actualUnitCommands = Spring.GetUnitCommands(unitID, 1000)
+
+	for i, cmd in ipairs(actualUnitCommands) do
+		if(cmdID == cmd.id) then		
+			if(cmd.params and cmdParams) then
+
+				if( IsNumber(cmdParams) or IsNumber(cmd.params) ) then
+					if(cmdParams == cmd.params) then
+						return true
+					end
+				else
+					if(cmd.params[1] == cmdParams[1] and cmd.params[2] == cmdParams[2] and cmd.params[3] == cmdParams[3]) then
+						return true
+					end
+				end
+			end
+		end
+	end
+
+	return false
+
 end
 
 function SetFactoryCommandsToUnitsGroup(factID)
@@ -198,8 +250,6 @@ function SetFactoryCommandsToUnitsGroup(factID)
 	local orderArray = {}
 
 	local factoryCommands = Spring.GetUnitCommands(factID, 1000)
-
-	--local minSpeed = GetMinimumUnitsMoveSpeed(unitsGroups[factID].units)
 
 	local lastGroupIndex = #unitsGroups[factID];
 
@@ -218,22 +268,6 @@ function SetFactoryCommandsToUnitsGroup(factID)
 
 	for i, cmd in ipairs(factoryCommands) do
 		local cmdOptions = cmd.options
-
-		--cmdOptions["ctrl"] = true
-		--cmdOptions["shift"] = true
-		--cmdOptions["right"] = true
-		--cmdOptions["alt"] = true
-
-		--local coded = 0
-
-		--if cmdOptions["alt"]  then coded = coded + CMD.OPT_ALT   end
-		--if cmdOptions["ctrl"]  then coded = coded + CMD.OPT_CTRL  end
-		--if cmdOptions["meta"]  then coded = coded + CMD.OPT_META  end
-		--if cmdOptions["shift"] then coded = coded + CMD.OPT_SHIFT end
-		--if cmdOptions["right"] then coded = coded + CMD.OPT_RIGHT end
-
-		--cmdOptions.coded = coded
-
 		local order = { cmd.id, cmd.params, cmdOptions }
 		table.insert(orderArray, order)
 	end
@@ -270,12 +304,16 @@ function SetFactoryCommandsToUnitsGroup(factID)
 		return
 	end
 
-	--Spring.Echo("frontLineOfGroupCount: "..#frontLineOfGroup.." rearLineOfGroupCount "..#rearLineOfGroup)
-
 	local frontLineUnitsIds = SelectFromArrayValues(frontLineOfGroup, function(a) return a.unitID end)
 	local rearLineUnitsIds = SelectFromArrayValues(rearLineOfGroup, function(a) return a.unitID end)
 
 	if(#frontLineOfGroup == 1 or #frontLineOfGroup >= #rearLineOfGroup) then
+
+
+		--Save guard target unitID
+		for index, unitValue in ipairs(rearLineOfGroup) do
+			lastGroup.units[unitValue.unitID].rearLineGuardTargetID = frontLineUnitsIds[1]
+		end
 
 		Spring.GiveOrderToUnitArray(rearLineUnitsIds, CMD.GUARD, {frontLineUnitsIds[1]}, {})
 		Spring.GiveOrderArrayToUnitArray(frontLineUnitsIds, orderArray)
@@ -289,7 +327,6 @@ function SetFactoryCommandsToUnitsGroup(factID)
 
 		--ToDo make smart balance if not
 		if(#rearLineUnitsValues % #frontLineUnitsIds == 0) then
-		--if(#unitsValues % #frontLineUnitsIds == #unitsValues - math.floor(#unitsValues/#frontLineUnitsIds)*#frontLineUnitsIds) then
 
 			local guardUnitsCount = #rearLineUnitsValues / #frontLineUnitsIds
 
@@ -309,11 +346,19 @@ function SetFactoryCommandsToUnitsGroup(factID)
 
 				local rareLineUnitsForGuardIds = SelectFromArrayValues(rareLineUnitsForGuard, function(a) return a.unitID end)
 
+				--Save guard target unitID
+				for index, unitValue in ipairs(rearLineUnitsValues) do
+					lastGroup.units[unitValue.unitID].rearLineGuardTargetID = unitID
+				end
 				Spring.GiveOrderToUnitArray(rareLineUnitsForGuardIds, CMD.GUARD, {unitID}, {})
 			end
 
 		else
 
+			--Save guard target unitID
+			for index, unitValue in ipairs(rearLineUnitsValues) do
+				lastGroup.units[unitValue.unitID].rearLineGuardTargetID = frontLineUnitsIds[1]
+			end
 			local rareLineUnitsForGuardIds = SelectFromArrayValues(rearLineUnitsValues, function(a) return a.unitID end)
 			Spring.GiveOrderToUnitArray(rareLineUnitsForGuardIds, CMD.GUARD, {frontLineUnitsIds[1]}, {})
 
@@ -322,6 +367,115 @@ function SetFactoryCommandsToUnitsGroup(factID)
 
 	--ToDo if leader is far from guard squad than wait for them.
 	Spring.GiveOrderArrayToUnitArray(frontLineUnitsIds, orderArray)
+end
+
+--Gets count of NOT support units in factory build queue
+function GetFactoryBuildQueueGroupSize(factID)
+
+	local fullBuildQueue = Spring.GetFullBuildQueue(factID)
+
+	local unitsCount = 0
+
+	for i = 1, #fullBuildQueue do
+
+		for unitDefID, unitDefCount in pairs(fullBuildQueue[i]) do
+			if(not IsSupportUnit(unitDefID) and not IsBuilder(unitDefID)) then
+				unitsCount = unitsCount + unitDefCount;
+			end
+		end
+
+	end
+
+	return unitsCount
+
+end
+
+function IsBuilder(unitDefID)
+	local unitDef = UnitDefs[unitDefID]
+	return unitDef.isBuilder
+	or (unitDef.canReclaim and unitDef.reclaimSpeed > 0)
+	or (unitDef.canResurrect and unitDef.resurrectSpeed > 0)
+	or (unitDef.canRepair and unitDef.repairSpeed > 0) or (unitDef.buildOptions and unitDef.buildOptions[1])
+end
+
+function IsFactoryExperimental(factDefID)
+	
+	local factDef = UnitDefs[factDefID]
+	if string.find(factDef.translatedTooltip, "Experimental") then return true end
+
+	return false
+
+end
+
+function IsSupportUnit(unitDefID)
+
+	if IsRadar(unitDefID) or IsJummer(unitDefID) or IsGroundAAUnit(unitDefID) then return true end
+
+	return false
+end
+
+function IsJummer(unitDefID)
+	local unitDef = UnitDefs[unitDefID]
+	return unitDef.radarDistanceJam > 100
+end
+
+function IsRadar(unitDefID)
+	local unitDef = UnitDefs[unitDefID]
+	return unitDef.radarDistance >= 1000
+end
+
+function IsGroundAAUnit(unitDefID)
+	local unitDef = UnitDefs[unitDefID]
+
+	local canAttackGroundForAnyOfWeapon = false;
+	local weapons = unitDef.weapons
+	if #weapons > 0 then
+		for i = 1, #weapons do
+			local weaponDef = WeaponDefs[weapons[i].weaponDef]
+			if(weaponDef.canAttackGround) then canAttackGroundForAnyOfWeapon = true break end
+		end
+	end
+
+	return not canAttackGroundForAnyOfWeapon
+end
+
+function IsInPatrol(unitID)
+    local unitCommands = Spring.GetUnitCommands(unitID, 100)
+
+    if(unitCommands == nil) then return false end
+
+    for i, cmd in ipairs(unitCommands) do
+        if(cmd.id == CMD.PATROL) then return true end
+    end
+
+    return false
+end
+
+function GetRandomPointInRadousAroundUnit(unitID, radius)
+	local x, y, z = Spring.GetUnitPosition(unitID)
+
+    local angle = math.random() * 2 * math.pi
+
+    local x = x + radius * math.cos(angle)
+    local z = z + radius * math.sin(angle)
+
+	return {x = x, y = y, z = z}
+end
+
+function GetDistance(unitID1, unitID2)
+    local x1, y1, z1 = Spring.GetUnitPosition(unitID1)
+    local x2, y2, z2 = Spring.GetUnitPosition(unitID2)
+
+    if x1 and y1 and z1 and x2 and y2 and z2 then
+        local dx = x1 - x2
+        local dy = y1 - y2
+        local dz = z1 - z2
+
+        local distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+        return distance
+    else
+        return nil  -- One or both units do not exist or have no position
+    end
 end
 
 ---@generic T
@@ -421,134 +575,8 @@ function FilterByTableValues(someTable, comp)
 	return filtered
 end
 
-function GetMinimumUnitsMoveSpeed(unitsGroups)
-    local minSpeed = math.huge
-
-    for unitID, unitData in pairs(unitsGroups) do
-
-		local moveSpeed = Spring.GetUnitMoveTypeData(unitID).maxSpeed
-
-		if moveSpeed and moveSpeed < minSpeed then
-			minSpeed = moveSpeed
-		end
-    end
-
-    return minSpeed
-end
-
---Gets count of NOT support units in factory build queue
-function GetFactoryBuildQueueGroupSize(factID)
-
-	local fullBuildQueue = Spring.GetFullBuildQueue(factID)
-
-	local unitsCount = 0
-
-	for i = 1, #fullBuildQueue do
-
-		for unitDefID, unitDefCount in pairs(fullBuildQueue[i]) do
-			if(not IsSupportUnit(unitDefID) and not IsBuilder(unitDefID)) then
-				unitsCount = unitsCount + unitDefCount;
-			end
-		end
-
-	end
-
-	return unitsCount
-
-end
-
-function IsBuilder(unitDefID)
-	local unitDef = UnitDefs[unitDefID]
-	return unitDef.isBuilder
-	or (unitDef.canReclaim and unitDef.reclaimSpeed > 0)
-	or (unitDef.canResurrect and unitDef.resurrectSpeed > 0)
-	or (unitDef.canRepair and unitDef.repairSpeed > 0) or (unitDef.buildOptions and unitDef.buildOptions[1])
-end
-
-function IsFactoryExperimental(factDefID)
-	
-	local factDef = UnitDefs[factDefID]
-	if string.find(factDef.translatedTooltip, "Experimental") then return true end
-
-	return false
-
-end
-
-function IsSupportUnit(unitDefID)
-
-	if IsRadar(unitDefID) or IsJummer(unitDefID) or IsGroundAAUnit(unitDefID) then return true end
-
-	return false
-end
-
-function IsJummer(unitDefID)
-	local unitDef = UnitDefs[unitDefID]
-	return unitDef.radarDistanceJam > 100
-end
-
-function IsRadar(unitDefID)
-	local unitDef = UnitDefs[unitDefID]
-	return unitDef.radarDistance >= 1000
-end
-
-function IsGroundAAUnit(unitDefID)
-	local unitDef = UnitDefs[unitDefID]
-
-	local canAttackGroundForAnyOfWeapon = false;
-	local weapons = unitDef.weapons
-	if #weapons > 0 then
-		for i = 1, #weapons do
-			local weaponDef = WeaponDefs[weapons[i].weaponDef]
-			if(weaponDef.canAttackGround) then canAttackGroundForAnyOfWeapon = true break end
-		end
-	end
-
-	return not canAttackGroundForAnyOfWeapon
-end
-
-function SendToRandomPointInRadius(unitID, radius)
-	local randonPoint = GetRandomPointInRadousAroundUnit(unitID, radius)
-
-    Spring.GiveOrderToUnit(unitID, CMD.MOVE, {randonPoint.x, randonPoint.y, randonPoint.z}, {})
-end
-
-function GetRandomPointInRadousAroundUnit(unitID, radius)
-	local x, y, z = Spring.GetUnitPosition(unitID)
-
-    local angle = math.random() * 2 * math.pi
-
-    local x = x + radius * math.cos(angle)
-    local z = z + radius * math.sin(angle)
-
-	return {x = x, y = y, z = z}
-end
-
-function GetDistance(unitID1, unitID2)
-    local x1, y1, z1 = Spring.GetUnitPosition(unitID1)
-    local x2, y2, z2 = Spring.GetUnitPosition(unitID2)
-
-    if x1 and y1 and z1 and x2 and y2 and z2 then
-        local dx = x1 - x2
-        local dy = y1 - y2
-        local dz = z1 - z2
-
-        local distance = math.sqrt(dx * dx + dy * dy + dz * dz)
-        return distance
-    else
-        return nil  -- One or both units do not exist or have no position
-    end
-end
-
-function IsInPatrol(unitID)
-    local unitCommands = Spring.GetUnitCommands(unitID, 100)
-
-    if(unitCommands == nil) then return false end
-
-    for i, cmd in ipairs(unitCommands) do
-        if(cmd.id == CMD.PATROL) then return true end
-    end
-
-    return false
+function IsNumber(object)
+	return type(object) == "number"
 end
 
 --debug functions--
