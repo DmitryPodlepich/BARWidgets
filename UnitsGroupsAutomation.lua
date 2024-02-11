@@ -30,7 +30,8 @@ local myTeamId = Spring.GetMyTeamID()
 local clearQueueCommandId = 5
 
 local unitsGroups = {}
---local unitsGroupMemberStates = { WAITING = "WAITING", ONPATROL = "ONPATROL" }
+local unitsStates = { WAITING = "WAITING", ONPATROL = "ONPATROL", RETREATING = "RETREATING" }
+local unitsStatuses = { UNDEFINED = "UNDEFINED", FRONTLINE = "FRONTLINE", REARLINE = "REARLINE" }
 
 local factoriesAllowedToCreateGroups = {}
 
@@ -62,20 +63,72 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
 
 		--if current factory builds its first group
 		if(unitsGroups[factID] == nil) then
-			unitsGroups[factID] = { units = {}}
+			unitsGroups[factID] = {}
 		end
 
-		unitsGroups[factID].units[unitID] = { unitDefID = unitDefID}
+		if(GetTablelength(unitsGroups[factID]) == 0) then
+			table.insert(unitsGroups[factID], { units = {}, frontLineUnits = {}, initialCount = buildQueueSize })
+		end
+		
+		local lastGroupIndex = #unitsGroups[factID];
 
-		Spring.GiveOrderToUnit(unitID, CMD.GUARD, {factID}, {})
+		local lastGroup = unitsGroups[factID][lastGroupIndex]
 
-		local unitsCountInCurrentGroup = GetTablelength(unitsGroups[factID].units);
+		--Spring.Echo("GetTablelength(lastGroup.units): "..GetTablelength(lastGroup.units).." lastGroup.initialCount: "..lastGroup.initialCount)
 
-		-- Release units group and allow them to patrol
-		if(unitsCountInCurrentGroup >= buildQueueSize) then
+		if( GetTablelength(lastGroup.units) < buildQueueSize) then
 
+			Spring.GiveOrderToUnit(unitID, CMD.GUARD, {factID}, {})
+
+			lastGroup.units[unitID] = { 
+				unitID = unitID,
+				unitDefID = unitDefID,
+				unitMaxHealth = UnitDefs[unitDefID].health,
+				groupIndex = lastGroupIndex,
+				factoryCommands = {},
+				rearLineGuardTargetID = 0,
+				unitStatus = unitsStatuses.UNDEFINED,
+				unitState = unitsStates.WAITING
+			}
+		end
+
+		if(GetTablelength(lastGroup.units) >= lastGroup.initialCount) then
+			-- Release units group and allow them to patrol
 			SetFactoryCommandsToUnitsGroup(factID)
+			
+			table.insert(unitsGroups[factID], { units = {}, frontLineUnits = {}, initialCount = buildQueueSize })
+		end
+	end
+end
 
+function widget:UnitIdle(unitID, unitDefID, teamID)
+
+	if(myTeamId ~= teamID) then return end
+
+	for factoryID, groups in pairs(unitsGroups) do
+		
+		for groupIndex, group in ipairs(groups) do
+			
+			for groupUnitID, unitData in pairs(group.units) do
+				
+				--It seems like rear line unit is Idle because front line unit has been destroyed
+				if(unitID == groupUnitID and unitData.unitStatus == unitsStatuses.REARLINE) then
+					
+					--Check if we have some alive front line units in this group. If yes lets guard one of those.
+					for frontLineGroupUnitID, unitData in pairs(group.units) do
+
+						if(unitData.unitStatus == unitsStatuses.FRONTLINE and Spring.ValidUnitID(frontLineGroupUnitID) and not Spring.GetUnitIsDead(frontLineGroupUnitID)) then
+							
+							Spring.GiveOrderToUnit(groupUnitID, CMD.GUARD, {frontLineGroupUnitID}, {})
+							return
+						end
+					end
+
+					--If there is not any alive frontLineUnits just go on patrol.
+					Spring.GiveOrderArrayToUnit(groupUnitID, unitData.factoryCommands)
+					return
+				end
+			end
 		end
 	end
 end
@@ -87,55 +140,33 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID)
 	--If factory has been destroyed
 	if(unitsGroups[unitID]) then unitsGroups[unitID] = nil end
 	if(factoriesAllowedToCreateGroups[unitID]) then factoriesAllowedToCreateGroups[unitID] = nil end
+
+	--if not factory but unit has been destroyed
+	if(unitsGroups[unitID] == nil) then
+
+		for i, unitsGroup in ipairs(unitsGroups) do
+			for groupIndex, groupUnitData in pairs(unitsGroup) do
+
+				for unitIDInGroupUnits, unitData in pairs(groupUnitData.units) do
+					
+					if(unitID == unitIDInGroupUnits) then
+
+						groupUnitData.units[unitID] = nil
+						return
+					end
+				end
+			end
+		end
+	end
 end
 
 function widget:CommandNotify(commandId, params, options)
-
-	-- local selectedUnits = Spring.GetSelectedUnits()
-
-	-- for i = 1, #selectedUnits do
-
-	-- 	local selectedUnitId = selectedUnits[i]
-		
-	-- 	local teamID = Spring.GetUnitTeam(selectedUnitId)
-
-	-- 	if(myTeamId ~= teamID) then return end
-
-	-- 	local selectedUnitDefId = Spring.GetUnitDefID(selectedUnitId)
-
-		--Spring.Echo("commandId: "..tostring(commandId))
-		--Spring.Echo("params: "..dumpObject(params))
-
-		--If factory is selected and just received an order REPEAT ON then put it to factoriesAllowedToCreateGroups
-		--Only factories which are in repeatON mode allowed to create units groups
-		-- if(UnitDefs[selectedUnitDefId].isFactory and commandId == CMD.REPEAT and params) then
-		-- 	if(params[1] == 1) then
-		-- 		factoriesAllowedToCreateGroups[selectedUnitId] = {}
-		-- 		Spring.Echo("Allowed FactoryID: "..selectedUnitId)
-		-- 	else
-		-- 		factoriesAllowedToCreateGroups[selectedUnitId] = nil
-		-- 		Spring.Echo("Disallowed FactoryID: "..selectedUnitId)
-		-- 	end
-		-- end
-
-		-- --ToDo if user pushs clear queue OR change buid queue then we release all units from unitsGroups related to that factory  
-		-- if(UnitDefs[selectedUnitDefId].isFactory and unitsGroups[selectedUnitId]) then
-		-- 	if(commandId == clearQueueCommandId or UnitDefs[commandId]) then
-		-- 		Spring.Echo("Rease all units related to factory: "..selectedUnitId)
-		-- 		SetFactoryCommandsToUnitsGroup(selectedUnitId)
-		-- 	end
-		-- end
-	--end
 end
 
 function widget:UnitCreated(unitID, unitDefID, teamID, builderID)
 end
 
 function widget:UnitCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOptions)
-
-	--Spring.Echo("Spring.MoveCtrl: "..dumpObject(Spring))
-	--Spring.Echo("Spring: "..dumpObject(Spring))
-	--Spring.Echo("cmdID: "..dumpObject(cmdID).." cmdParams: "..dumpObject(cmdParams).." cmdOptions: "..dumpObject(cmdOptions))
 
 	if(myTeamId ~= teamID) then return end
 
@@ -149,7 +180,7 @@ function widget:UnitCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOpti
 		end
 	end
 
-	--ToDo if user pushs clear queue OR change buid queue then we release all units from unitsGroups related to that factory  
+	--ToDo if user change buid queue then we release all units from unitsGroups related to that factory  
 	if(UnitDefs[unitDefID].isFactory and unitsGroups[unitID]) then
 		if(cmdID == clearQueueCommandId) then
 			SetFactoryCommandsToUnitsGroup(unitID)
@@ -162,63 +193,232 @@ end
 
 function SetFactoryCommandsToUnitsGroup(factID)
 
-	local unitsArray = {}
+	local unitsIdsArray = {}
 
 	local orderArray = {}
 
 	local factoryCommands = Spring.GetUnitCommands(factID, 1000)
 
-	local minSpeed = GetMinimumUnitsMoveSpeed(unitsGroups[factID].units)
+	--local minSpeed = GetMinimumUnitsMoveSpeed(unitsGroups[factID].units)
 
-	--Spring.Echo("minSpeed: "..minSpeed)
+	local lastGroupIndex = #unitsGroups[factID];
 
-	for wUnitID, wUnitData in pairs(unitsGroups[factID].units) do
-		table.insert(unitsArray,wUnitID)
+	if(lastGroupIndex == nil or lastGroupIndex <= 0) then return end
 
-		if(math.huge ~= minSpeed) then
-			local currentSpeed = Spring.GetUnitMoveTypeData(wUnitID)
+	local lastGroup = unitsGroups[factID][lastGroupIndex]
 
-			--Spring.MoveCtrl.SetGroundMoveTypeData(wUnitID, "maxSpeed", minSpeed)
-			--Spring.MoveCtrl.SetGroundMoveTypeData(wUnitID, { maxSpeed = minSpeed, turnRate = currentSpeed.turnRate, slopeMod = currentSpeed.slopeMod })
-		end
+	if(GetTablelength(lastGroup.units) <= 0) then return end
 
-		--ERROR call SetUnitMoveGoal a nil 
-		-- for i, cmd in ipairs(factoryCommands) do
-		-- 	if(cmd.id == CMD.MOVE or cmd.id == CMD.PATROL) then
-		-- 		if(cmd.params and cmd.params[1] and cmd.params[2] and cmd.params[3]) then
-		-- 			Spring.SetUnitMoveGoal(wUnitID, cmd.params[1], cmd.params[2], cmd.params[3], minSpeed)
-		-- 		end
-		-- 	end
-		-- end
+	for wUnitID, wUnitData in pairs(lastGroup.units) do
 
-		unitsGroups[factID].units[wUnitID] = nil
+		table.insert(unitsIdsArray, wUnitID)
+		lastGroup.units[wUnitID].unitState = unitsStates.ONPATROL
+
 	end
 
 	for i, cmd in ipairs(factoryCommands) do
 		local cmdOptions = cmd.options
 
-		cmdOptions["ctrl"] = true
+		--cmdOptions["ctrl"] = true
 		--cmdOptions["shift"] = true
-		cmdOptions["right"] = true
-		cmdOptions["alt"] = true
+		--cmdOptions["right"] = true
+		--cmdOptions["alt"] = true
 
-		local coded = 0
+		--local coded = 0
 
-		if cmdOptions["alt"]  then coded = coded + CMD.OPT_ALT   end
-		if cmdOptions["ctrl"]  then coded = coded + CMD.OPT_CTRL  end
-		if cmdOptions["meta"]  then coded = coded + CMD.OPT_META  end
-		if cmdOptions["shift"] then coded = coded + CMD.OPT_SHIFT end
-		if cmdOptions["right"] then coded = coded + CMD.OPT_RIGHT end
+		--if cmdOptions["alt"]  then coded = coded + CMD.OPT_ALT   end
+		--if cmdOptions["ctrl"]  then coded = coded + CMD.OPT_CTRL  end
+		--if cmdOptions["meta"]  then coded = coded + CMD.OPT_META  end
+		--if cmdOptions["shift"] then coded = coded + CMD.OPT_SHIFT end
+		--if cmdOptions["right"] then coded = coded + CMD.OPT_RIGHT end
 
-		cmdOptions.coded = coded
+		--cmdOptions.coded = coded
 
 		local order = { cmd.id, cmd.params, cmdOptions }
 		table.insert(orderArray, order)
 	end
 
-	--Spring.Echo("orderArray: "..dumpObject(orderArray))
+	--Sort units by health
+	local unitsValues = {}
 
-	Spring.GiveOrderArrayToUnitArray(unitsArray, orderArray)
+	for key, value in pairs(lastGroup.units) do
+		table.insert(unitsValues, value)
+	end
+
+	table.sort(unitsValues, function(a, b) return a.unitMaxHealth > b.unitMaxHealth end)
+
+	--get the most fat units
+	local maxHealthAmongGroup = unitsValues[1].unitMaxHealth
+
+	local frontLineOfGroup = FilterByArrayValues(unitsValues, function(a) return a.unitMaxHealth == maxHealthAmongGroup end)
+	local rearLineOfGroup = FilterByArrayValues(unitsValues, function(a) return a.unitMaxHealth < maxHealthAmongGroup end)
+
+	--set units statuses and factory commands
+	for index, unitValue in ipairs(frontLineOfGroup) do
+		lastGroup.units[unitValue.unitID].unitStatus = unitsStatuses.FRONTLINE
+		lastGroup.units[unitValue.unitID].factoryCommands = orderArray
+	end
+
+	for index, unitValue in ipairs(rearLineOfGroup) do
+		lastGroup.units[unitValue.unitID].unitStatus = unitsStatuses.REARLINE
+		lastGroup.units[unitValue.unitID].factoryCommands = orderArray
+	end
+
+	--If group contains all same units so we dont have any leaders.
+	if(#frontLineOfGroup == lastGroup.initialCount) then
+		Spring.GiveOrderArrayToUnitArray(unitsIdsArray, orderArray)
+		return
+	end
+
+	--Spring.Echo("frontLineOfGroupCount: "..#frontLineOfGroup.." rearLineOfGroupCount "..#rearLineOfGroup)
+
+	local frontLineUnitsIds = SelectFromArrayValues(frontLineOfGroup, function(a) return a.unitID end)
+	local rearLineUnitsIds = SelectFromArrayValues(rearLineOfGroup, function(a) return a.unitID end)
+
+	if(#frontLineOfGroup == 1 or #frontLineOfGroup >= #rearLineOfGroup) then
+
+		Spring.GiveOrderToUnitArray(rearLineUnitsIds, CMD.GUARD, {frontLineUnitsIds[1]}, {})
+		Spring.GiveOrderArrayToUnitArray(frontLineUnitsIds, orderArray)
+
+		return
+	end
+
+	local groupedRearLineUnitsIds = GroupArrayByValue(rearLineOfGroup, function(a) return a.unitDefID end)
+
+	for unitDefID, rearLineUnitsValues in pairs(groupedRearLineUnitsIds) do
+
+		--ToDo make smart balance if not
+		if(#rearLineUnitsValues % #frontLineUnitsIds == 0) then
+		--if(#unitsValues % #frontLineUnitsIds == #unitsValues - math.floor(#unitsValues/#frontLineUnitsIds)*#frontLineUnitsIds) then
+
+			local guardUnitsCount = #rearLineUnitsValues / #frontLineUnitsIds
+
+			for index, unitID in ipairs(frontLineUnitsIds) do
+
+				local indexWithGuardUnitsCount = index
+
+				if (indexWithGuardUnitsCount > 1) then
+					indexWithGuardUnitsCount = indexWithGuardUnitsCount + (guardUnitsCount - 1)
+				end
+
+				local endIndex = indexWithGuardUnitsCount + (guardUnitsCount - 1)
+
+				local rareLineUnitsForGuard = TakeFromTable(rearLineUnitsValues, indexWithGuardUnitsCount, endIndex)
+
+				if(rareLineUnitsForGuard == nil) then error("rareLineUnitsForGuardIds was nil!!!") end
+
+				local rareLineUnitsForGuardIds = SelectFromArrayValues(rareLineUnitsForGuard, function(a) return a.unitID end)
+
+				Spring.GiveOrderToUnitArray(rareLineUnitsForGuardIds, CMD.GUARD, {unitID}, {})
+			end
+
+		else
+
+			local rareLineUnitsForGuardIds = SelectFromArrayValues(rearLineUnitsValues, function(a) return a.unitID end)
+			Spring.GiveOrderToUnitArray(rareLineUnitsForGuardIds, CMD.GUARD, {frontLineUnitsIds[1]}, {})
+
+		end
+	end
+
+	--ToDo if leader is far from guard squad than wait for them.
+	Spring.GiveOrderArrayToUnitArray(frontLineUnitsIds, orderArray)
+end
+
+---@generic T
+---@param arrayToSlice T[]
+---@param startIndex number
+---@param endIndex number
+function TakeFromTable(arrayToSlice, startIndex, endIndex)
+
+	local slicedArray = {}
+
+	for i = startIndex, endIndex do
+		table.insert(slicedArray, arrayToSlice[i])
+	end
+
+	return slicedArray
+end
+
+---@generic T
+---@param array T[]
+---@param comp? fun(a: T):boolean
+function FilterByArrayValues(array, comp)
+
+	local filtered = {}
+
+	if(array == nil or comp == nil) then
+		return filtered
+	end
+
+	for index, value in ipairs(array) do
+		if ( comp(value) ) then
+			table.insert(filtered, value)
+		end
+	end
+
+	return filtered
+end
+
+---@generic T
+---@param array T[]
+---@param comp? fun(a: T):any
+function SelectFromArrayValues(array, comp)
+	local selected = {}
+
+	if(array == nil or comp == nil) then
+		return selected
+	end
+
+	for index, value in ipairs(array) do
+		table.insert(selected, comp(value))
+	end
+
+	return selected
+end
+
+---@generic T
+---@param array T[]
+---@param comp? fun(a: T):any
+function GroupArrayByValue(array, comp)
+
+	local groups = {}
+
+	if(array == nil or comp == nil) then
+		return groups
+	end
+
+	for index, value in ipairs(array) do
+
+		local groupKey = comp(value);
+
+		if(groups[groupKey] == nil) then
+			groups[groupKey] = {}
+		end
+
+		table.insert(groups[groupKey], value)
+	end
+
+	return groups
+end
+
+---@generic T
+---@param someTable T[]
+---@param comp? fun(a: T):boolean
+function FilterByTableValues(someTable, comp)
+
+	local filtered = {}
+
+	if(someTable == nil or comp == nil) then
+		return filtered
+	end
+
+	for key, value in pairs(someTable) do
+		if ( comp(value) ) then
+			filtered[key] = value
+		end
+	end
+
+	return filtered
 end
 
 function GetMinimumUnitsMoveSpeed(unitsGroups)

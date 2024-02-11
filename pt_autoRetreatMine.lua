@@ -26,8 +26,6 @@ local ignoredDefsIDs = {            -- List of unit IDs to ignore
     "corak"
 }
 
-
-
 -- End of User Configuration ---------------------------------------------------------------------------------
 
 local gameStarted = false
