@@ -35,6 +35,7 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
 
 	if(IsBuilder(unitDefID)) then return end
 
+	if( IsFlying(unitDefID) ) then return end
 	--Spring.Echo(dumpObject(UnitDefs[unitDefID]))
 
     -- Logic for support units. After unit creation it waits for guard target (radar, jummer, AA etc.)
@@ -161,7 +162,7 @@ end
 
 function widget:GameFrame(frame)
 
-	if frame % 10 > 0 then return end
+	if frame % 30 > 0 then return end
 
 	for supportUnitId, supportUnitValue in pairs(supportUnits) do	
 		if(supportUnitValue.supportUnitState == supportUnitsState.RETURNING) then
@@ -287,6 +288,10 @@ function IsApplicable(targetUnitDefID, supportUnitDefID)
 	local targetUnitDef = UnitDefs[targetUnitDefID]
 	local supportUnitDef = UnitDefs[supportUnitDefID]
 
+	if(supportUnitDef == nil) then
+		return
+	end
+
 	local isTargetBoat = targetUnitDef.moveDef.name and string.find(targetUnitDef.moveDef.name, 'boat')
 	local isSupportBoat = supportUnitDef.moveDef.name and string.find(supportUnitDef.moveDef.name, 'boat')
 
@@ -301,6 +306,11 @@ function IsBuilder(unitDefID)
 	or (unitDef.canReclaim and unitDef.reclaimSpeed > 0)
 	or (unitDef.canResurrect and unitDef.resurrectSpeed > 0)
 	or (unitDef.canRepair and unitDef.repairSpeed > 0) or (unitDef.buildOptions and unitDef.buildOptions[1])
+end
+
+function IsFlying(unitDefID)
+	local unitDef = UnitDefs[unitDefID]
+	return unitDef.canFly
 end
 
 function IsFactoryTech2OrExperimental(factDefID)

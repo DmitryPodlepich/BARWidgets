@@ -1,6 +1,6 @@
 function widget:GetInfo()
     return {
-        name = "Auto Retreat Patrol",
+        name = "Auto Retreat Patrol V1",
         desc = "Retreats units to designated location on low HP",
         author = "PureTilt",
         date = "June 2023",
@@ -14,6 +14,7 @@ end
 -- User Configuration ----------------------------------------------------------------------------------------
 -- Edit these values to change the widget's behavior
 
+local selfDestructThreshold = 0.15
 local retreatThreshold = 0.8        -- Health below which units will retreat, 0.6 = 60% health
 local returnAfterRetreatOn = true  -- If true, units will return to their original position after retreating
 local markerRadius = 200            -- Radius of the gather point
@@ -46,7 +47,7 @@ for index, ID in pairs(ignoredDefsIDs) do
     ignoredDefs[ID] = true
 end
 
-local gatherPoint
+GatherPointOfPatrolRetreat = nil
 
 local SetUnitGroup = Spring.SetUnitGroup
 local GetSelectedUnits = Spring.GetSelectedUnits
@@ -133,8 +134,10 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
 
     if( IsBuilder(unitDefID) ) then return end
 
-    local unitCommands = Spring.GetUnitCommands(unitID, 1000);
-    allBuildedUnits[unitID] = { unitDefID = unitDefID, previousCommand = unitCommands }
+    if( IsInPatrol(unitID) ) then
+        local unitCommands = Spring.GetUnitCommands(unitID, 1000);
+        allBuildedUnits[unitID] = { unitDefID = unitDefID, previousCommand = unitCommands }
+    end
 
 end
 
@@ -147,7 +150,7 @@ function widget:UnitCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOpti
     if(retreatingUnitsWithCommands[unitID]) then
         -- If unit just got an order during his way to retreat point. Or during healing but healing was not completed.
         if (retreatingUnitsWithCommands[unitID].retreating) then
-            if(cmdID ~= CMD.MOVE or (cmdID == CMD.MOVE and cmdParams and (cmdParams[1] ~= gatherPoint[1] or cmdParams[2] ~= gatherPoint[2] or cmdParams[3] ~= gatherPoint[3] ))) then
+            if(cmdID ~= CMD.MOVE or (cmdID == CMD.MOVE and cmdParams and (cmdParams[1] ~= GatherPointOfPatrolRetreat[1] or cmdParams[2] ~= GatherPointOfPatrolRetreat[2] or cmdParams[3] ~= GatherPointOfPatrolRetreat[3] ))) then
                 allBuildedUnits[unitID] = nil
                 retreatingUnitsWithCommands[unitID] = nil
                 return
@@ -200,9 +203,17 @@ function widget:UnitDamaged(unitID, unitDefID, unitTeam, damage, paralyzer, weap
         return
     end
 
-    local curHealth, maxHealth = GetUnitHealth(unitID)
+    if GatherPointOfPatrolRetreat then
 
-    if gatherPoint then
+        local curHealth, maxHealth = GetUnitHealth(unitID)
+
+        --Self distruct unit if health is too low. In order to not give your oponent a free metal or unit to resurect.
+        if (retreatingUnitsWithCommands[unitID] and retreatingUnitsWithCommands[unitID].retreating and not retreatingUnitsWithCommands[unitID].isSelfDestruct and curHealth / maxHealth < selfDestructThreshold )
+        then
+            retreatingUnitsWithCommands[unitID].isSelfDestruct = true;
+            Spring.GiveOrderToUnit(unitID, CMD.SELFD, {}, {})
+        end
+
         if (not retreatingUnitsWithCommands[unitID] or not retreatingUnitsWithCommands[unitID].retreating) and IsInPatrol(unitID) then
             if curHealth / maxHealth <= retreatThreshold then
 
@@ -221,14 +232,14 @@ function widget:UnitDamaged(unitID, unitDefID, unitTeam, damage, paralyzer, weap
 
                 --Get initial unit patrol commands. To send unit on patrol according to the same sequence as it was initially.
                 if(allBuildedUnits[unitID]) then
-                    unitCurrentCommands = allBuildedUnits[unitID].previousCommand  
+                    unitCurrentCommands = allBuildedUnits[unitID].previousCommand
                 else
                     unitCurrentCommands = Spring.GetUnitCommands(unitID, 1000);
                 end
 
                 unitGroup[unitID] = Spring.GetUnitGroup(unitID)
-                retreatingUnitsWithCommands[unitID] = {retreating = true, previousCommand = unitCurrentCommands}
-                Spring.GiveOrderToUnit(unitID, CMD.MOVE, { gatherPoint[1], gatherPoint[2], gatherPoint[3] }, {})
+                retreatingUnitsWithCommands[unitID] = {retreating = true, previousCommand = unitCurrentCommands, isSelfDestruct = false}
+                Spring.GiveOrderToUnit(unitID, CMD.MOVE, { GatherPointOfPatrolRetreat[1], GatherPointOfPatrolRetreat[2], GatherPointOfPatrolRetreat[3] }, {})
                 SetUnitGroup(unitID, -1)
             end
         end
@@ -282,12 +293,24 @@ function widget:GameFrame(gameFrame)
 
                         retreatingUnitsWithCommands[unitID].retreating = false
 
+                        --local isFirstCommand = true;
+
+                        --Spring.Echo("data.previousCommand: "..dumpObject(data.previousCommand))
+
                         for i, cmd in ipairs(data.previousCommand) do
                             local cmdType = cmd.id
                             local cmdParams = cmd.params
                             local cmdOptions = cmd.options
 
-                            Spring.GiveOrderToUnit(unitID, cmdType, cmdParams, cmdOptions)
+                            if(cmdType == CMD.PATROL) then
+
+                                if(i <= 0) then
+                                    cmdOptions = {}
+                                    --isFirstCommand = false
+                                end
+                                
+                                Spring.GiveOrderToUnit(unitID, cmdType, cmdParams, cmdOptions)
+                            end
                         end
                     end
                 end
@@ -335,8 +358,8 @@ end
 function SetRetreatPoint()
     local gatherPointX, gatherPointY = Spring.GetMouseState()
     local _, pos = Spring.TraceScreenRay(gatherPointX, gatherPointY, true)
-    if gatherPoint ~= nil and ((pos[1] - gatherPoint[1]) ^ 2 + (pos[3] - gatherPoint[3]) ^ 2 <= markerRadius ^ 2) then
-        gatherPoint = nil
+    if GatherPointOfPatrolRetreat ~= nil and ((pos[1] - GatherPointOfPatrolRetreat[1]) ^ 2 + (pos[3] - GatherPointOfPatrolRetreat[3]) ^ 2 <= markerRadius ^ 2) then
+        GatherPointOfPatrolRetreat = nil
         for unitID, data in pairs(retreatingUnitsWithCommands) do
             if data then
                 if unitGroup[unitID] ~= nil then
@@ -347,7 +370,7 @@ function SetRetreatPoint()
         end
     else
 
-        gatherPoint = pos
+        GatherPointOfPatrolRetreat = pos
         -- if the selected units are healers (and not a commander) then also move them to the gather point and give them a repair order
         local selectedUnits = GetSelectedUnits()
         for index, unitID in pairs(selectedUnits) do
@@ -355,9 +378,9 @@ function SetRetreatPoint()
                 for index, unitID in pairs(selectedUnits) do
                     -- Set the selected units' repeat option to true
                     Spring.GiveOrderToUnit(unitID, CMD.REPEAT, { 1 }, {})
-                    Spring.GiveOrderToUnit(unitID, CMD.MOVE, { gatherPoint[1], gatherPoint[2], gatherPoint[3] }, {})
+                    Spring.GiveOrderToUnit(unitID, CMD.MOVE, { GatherPointOfPatrolRetreat[1], GatherPointOfPatrolRetreat[2], GatherPointOfPatrolRetreat[3] }, {})
                     -- Give a repair order to the selected units in a circle around the gather point
-                    Spring.GiveOrderToUnit(unitID, CMD.REPAIR, { gatherPoint[1], gatherPoint[2], gatherPoint[3], markerRadius+20 }, { "shift" })
+                    Spring.GiveOrderToUnit(unitID, CMD.REPAIR, { GatherPointOfPatrolRetreat[1], GatherPointOfPatrolRetreat[2], GatherPointOfPatrolRetreat[3], markerRadius+20 }, { "shift" })
                 end
             end
         end
@@ -466,7 +489,7 @@ function invertColors (r, g, b, a)
 end
 
 function widget:DrawWorldPreUnit()
-    if gatherPoint then
+    if GatherPointOfPatrolRetreat then
         glPushMatrix()
 
         gl.Rotate(-90, 1, 0, 0)
@@ -492,13 +515,13 @@ function widget:DrawWorldPreUnit()
         end
         --]]
         gl.Rotate(-90, -1, 0, 0)
-        gl.Translate(gatherPoint[1], gatherPoint[2], gatherPoint[3])
+        gl.Translate(GatherPointOfPatrolRetreat[1], GatherPointOfPatrolRetreat[2], GatherPointOfPatrolRetreat[3])
         gl.Rotate(-90, 1, 0, 0)
         --gl.Rotate(-90, 1, 0, 0)
         glColor(0.25, 1, 0.25, 1)
         gl.Text("Gather\n  point", 0, 0, 50, "cxo")
 
-        gl.Translate(-gatherPoint[1], -gatherPoint[2], 0)
+        gl.Translate(-GatherPointOfPatrolRetreat[1], -GatherPointOfPatrolRetreat[2], 0)
         --[[
         -- add the blackCircleTexture as background texture
         glBlending(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
@@ -522,7 +545,7 @@ function widget:DrawWorldPreUnit()
         local function Circle(r)
             for i = 1, 128 do
                 local angle = (i - 1) * 2 * math.pi / 128
-                glVertex(gatherPoint[1] + r * sin(angle), gatherPoint[2] + r * cos(angle))
+                glVertex(GatherPointOfPatrolRetreat[1] + r * sin(angle), GatherPointOfPatrolRetreat[2] + r * cos(angle))
             end
         end
 
@@ -534,6 +557,46 @@ function widget:DrawWorldPreUnit()
 
         glPopMatrix()
     end
+end
+
+---@generic T
+---@param array T[]
+---@param comp? fun(a: T):boolean
+function FilterByArrayValues(array, comp)
+
+	local filtered = {}
+
+	if(array == nil or comp == nil) then
+		return filtered
+	end
+
+	for index, value in ipairs(array) do
+		if ( comp(value) ) then
+			table.insert(filtered, value)
+		end
+	end
+
+	return filtered
+end
+
+---@generic T
+---@param array T[]
+---@param comp? fun(a: T):boolean
+function FirstOrDefaultByArrayValues(array, comp)
+
+	local item = nil
+
+	if(array == nil or comp == nil) then
+		return item
+	end
+
+	for index, value in ipairs(array) do
+		if ( comp(value) ) then
+			return value
+		end
+	end
+
+	return item
 end
 
 function GetTablelength(T)

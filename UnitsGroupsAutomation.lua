@@ -4,9 +4,6 @@
 --After Load game or reload widget everything is broken with units groups and support units logic.
 	--Partially reason is that we can define ON REPEAT factories only on CommandNotify.
 
---Scheduled features--
---Make units groups travel with the same speed. (Probably we need to add { "Ctrl" } to the command options...)
-
 --VFS.Include("unbaconfigs/buildoptions.lua")
 --VFS.Include("luarules/configs/customcmds.h.lua")
 --VFS.Include("gamedata/movedefs.lua")
@@ -30,6 +27,8 @@ end
 local myTeamId = Spring.GetMyTeamID()
 
 local clearQueueCommandId = 5
+local distanceBetweenFrontAndRearThreshold = 240
+local automaticCMD_Option = "automaticCMD_Option"
 
 local unitsGroups = {}
 local unitsStates = { WAITING = "WAITING", ONPATROL = "ONPATROL", ATTACKING = "ATTACKING", RETREATING = "RETREATING" }
@@ -38,7 +37,7 @@ local unitsStatuses = { UNDEFINED = "UNDEFINED", FRONTLINE = "FRONTLINE", REARLI
 local factoriesAllowedToCreateGroups = {}
 
 function widget:Initialize()
-	Spring.Echo(widgetName.." inilialized...");
+	Spring.Echo(widgetName.." inilialized...3");
 end
 
 function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, userOrders)
@@ -48,6 +47,8 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
 	if (unitTeam ~= myTeamId) then return end
 
 	if(IsBuilder(unitDefID)) then return end
+
+	if(IsFlying(unitDefID)) then return end
 
 	--Prevent creating groups od experimental units
 	if(IsFactoryExperimental(factDefID)) then return end
@@ -63,18 +64,20 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
 		end
 
 		if(GetTablelength(unitsGroups[factID]) == 0) then
-			table.insert(unitsGroups[factID], { units = {}, initialCount = buildQueueSize })
+			table.insert(unitsGroups[factID], { units = {}, initialCount = 1 })
 		end
 		
 		local lastGroupIndex = #unitsGroups[factID];
 
 		local lastGroup = unitsGroups[factID][lastGroupIndex]
 
-		--Spring.Echo("GetTablelength(lastGroup.units): "..GetTablelength(lastGroup.units).." lastGroup.initialCount: "..lastGroup.initialCount)
+		if( GetTablelength(lastGroup.units) == 0 ) then
+			lastGroup.initialCount = buildQueueSize
+		end
 
 		if( GetTablelength(lastGroup.units) < lastGroup.initialCount) then
 
-			Spring.GiveOrderToUnit(unitID, CMD.GUARD, {factID}, {})
+			Spring.GiveOrderToUnit(unitID, CMD.GUARD, {factID}, { "meta", "alt", "internal" })
 
 			lastGroup.units[unitID] = { 
 				unitID = unitID,
@@ -92,7 +95,7 @@ function widget:UnitFromFactory(unitID, unitDefID, unitTeam, factID, factDefID, 
 			-- Release units group and allow them to patrol
 			SetFactoryCommandsToUnitsGroup(factID)
 			
-			table.insert(unitsGroups[factID], { units = {}, initialCount = buildQueueSize })
+			table.insert(unitsGroups[factID], { units = {}, initialCount = 1 })
 		end
 	end
 end
@@ -115,7 +118,8 @@ function widget:UnitIdle(unitID, unitDefID, teamID)
 
 						if(unitData.unitStatus == unitsStatuses.FRONTLINE and Spring.ValidUnitID(frontLineGroupUnitID) and not Spring.GetUnitIsDead(frontLineGroupUnitID)) then
 							
-							Spring.GiveOrderToUnit(groupUnitID, CMD.GUARD, {frontLineGroupUnitID}, {})
+							unitData.rearLineGuardTargetID = frontLineGroupUnitID
+							Spring.GiveOrderToUnit(groupUnitID, CMD.GUARD, {frontLineGroupUnitID}, { })
 							return
 						end
 					end
@@ -123,6 +127,33 @@ function widget:UnitIdle(unitID, unitDefID, teamID)
 					--If there is not any alive frontLineUnits just go on patrol.
 					Spring.GiveOrderArrayToUnit(groupUnitID, unitData.factoryCommands)
 					return
+				end
+			end
+		end
+	end
+end
+
+function widget:UnitDamaged(unitID, unitDefID, unitTeam, damage, paralyzer, weaponDefID, projectileID, attackerID, attackerDefID, attackerTeam)
+
+	if(myTeamId ~= unitTeam) then return end
+
+	for factoryID, factoryUnitGroups in pairs(unitsGroups) do
+		
+		for groupIndex, unitsGroup in ipairs(factoryUnitGroups) do
+			
+			for rearLineUnitID, unitData in pairs(unitsGroup.units) do
+				
+				if(unitID == rearLineUnitID and unitData.unitStatus == unitsStatuses.REARLINE) then
+
+					local curHealth, maxHealth = Spring.GetUnitHealth(rearLineUnitID)
+
+					--Spring.Echo("curHealth: "..dumpObject(curHealth).." maxHealth "..dumpObject(maxHealth))
+
+					if (curHealth / maxHealth <= 0.5) then 
+						--Unfortunately GatherPointOfPatrolRetreat is nil...
+						--Try to write somth to Unitdefs[frontLineUnitId] to link 2 widgets...
+						--Spring.Echo("Rear line unit: "..rearLineUnitID.." has been damaged hard...".." GatherPointOfPatrolRetreat: "..GatherPointOfPatrolRetreat)
+					end
 				end
 			end
 		end
@@ -140,14 +171,15 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID)
 	--if not factory but unit has been destroyed
 	if(unitsGroups[unitID] == nil) then
 
-		for i, unitsGroup in ipairs(unitsGroups) do
-			for groupIndex, groupUnitData in pairs(unitsGroup) do
+		for factoryID, unitsGroup in pairs(unitsGroups) do
+			for groupIndex, groupUnitData in ipairs(unitsGroup) do
 
 				for unitIDInGroupUnits, unitData in pairs(groupUnitData.units) do
 					
 					if(unitID == unitIDInGroupUnits) then
 
 						groupUnitData.units[unitID] = nil
+						--Spring.Echo("UnitDestroyed: "..unitID)
 						return
 					end
 				end
@@ -157,10 +189,22 @@ function widget:UnitDestroyed(unitID, unitDefID, teamID)
 end
 
 function widget:CommandNotify(commandId, params, options)
+
+	local selected = Spring.GetSelectedUnits()
+	
+	--if unit received an order from user forget it
+	for factoryID, factoryUnitGroups in pairs(unitsGroups) do	
+		for groupIndex, unitsGroup in ipairs(factoryUnitGroups) do				
+			for index, ID in pairs(selected) do
+				if (unitsGroup.units[ID]) then
+					unitsGroup.units[ID] = nil
+				end
+			end
+		end
+	end
+
 end
 
---ToDo: if user commands units which are waiting for group assembly then forget about those units.
---ToDo: if user commands units which are in patrol as group and have a front line status then forget about those units.
 function widget:UnitCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOptions)
 
 	if(myTeamId ~= teamID) then return end
@@ -168,10 +212,10 @@ function widget:UnitCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOpti
 	if(UnitDefs[unitDefID].isFactory and cmdID == CMD.REPEAT and cmdParams) then
 		if(cmdParams[1] == 1) then
 			factoriesAllowedToCreateGroups[unitID] = {}
-			Spring.Echo("Allowed FactoryID: "..unitID)
+			--Spring.Echo("Allowed FactoryID: "..unitID)
 		else
 			factoriesAllowedToCreateGroups[unitID] = nil
-			Spring.Echo("Disallowed FactoryID: "..unitID)
+			--Spring.Echo("Disallowed FactoryID: "..unitID)
 		end
 	end
 
@@ -181,66 +225,82 @@ function widget:UnitCommand(unitID, unitDefID, teamID, cmdID, cmdParams, cmdOpti
 			SetFactoryCommandsToUnitsGroup(unitID)
 		end
 	end
+
 end
 
 function widget:GameFrame(frame)
+
+	--if frame > 0 then return end
+
 	if frame % 30 > 0 then return end
 
+	--If front line unit has target all rear line units switch to that target.
+	--ToDo: if health of the taget is less than front line DPS than prevent it...
 	for factoryID, factoryUnitGroups in pairs(unitsGroups) do
 		
 		for groupIndex, unitsGroup in ipairs(factoryUnitGroups) do
 			
-			for unitID, unitData in pairs(unitsGroup.units) do
+			for frontLineUnitID, unitData in pairs(unitsGroup.units) do
 				
 				if(unitData.unitStatus == unitsStatuses.FRONTLINE) then
 
-					local targetType, _, targetUnitID = Spring.GetUnitWeaponTarget(unitID, 1)
+					local targetType, _, targetUnitID = Spring.GetUnitWeaponTarget(frontLineUnitID, 1)
 
-					for rareLineUnitID, unitData in pairs(unitsGroup.units) do
+					local allRearLineUnitsAreFar = true
 
-						if(unitData.unitStatus == unitsStatuses.REARLINE and unitData.rearLineGuardTargetID == unitID) then
+					for rareLineUnitID, rearLineUnitData in pairs(unitsGroup.units) do
 
-							if(targetUnitID and Spring.ValidUnitID(targetUnitID) and not Spring.GetUnitIsDead(targetUnitID)) then
+						if(rearLineUnitData.unitStatus == unitsStatuses.REARLINE and rearLineUnitData.rearLineGuardTargetID == frontLineUnitID) then
 
-								if(not UnitHasCommand(rareLineUnitID, CMD.ATTACK, targetUnitID)) then
+							local distanceBetweenFrontAndRear = GetDistance(rareLineUnitID, rearLineUnitData.rearLineGuardTargetID)
 
-									local commandResult = Spring.GiveOrderToUnit(rareLineUnitID, CMD.INSERT,{-1, CMD.ATTACK, CMD.OPT_SHIFT, targetUnitID}, {});
-									if(commandResult) then
-										--Spring.Echo("Spring.GiveOrderToUnit CMD.ATTACK: "..dumpObject(targetUnitID))
-									end
+							if(targetUnitID == nil or ( distanceBetweenFrontAndRear and distanceBetweenFrontAndRear > distanceBetweenFrontAndRearThreshold ) ) then
+								
+								local currentCommands = Spring.GetUnitCommands(rareLineUnitID, 1)
+	
+								if( currentCommands[1] and currentCommands[1].id ~= CMD.GUARD ) then
+
+									Spring.GiveOrderToUnit(rareLineUnitID, CMD.GUARD, {rearLineUnitData.rearLineGuardTargetID}, {})
+									--Spring.Echo(tostring(frame).."Order rearLine unit to guard: "..dumpObject(rearLineUnitData.rearLineGuardTargetID))
+									--break
+
+								end
+
+							else
+
+								local _, _, rearLineTargetUnitID = Spring.GetUnitWeaponTarget(rareLineUnitID, 1)
+
+								if(rearLineTargetUnitID ~= targetUnitID and Spring.ValidUnitID(targetUnitID) and not Spring.GetUnitIsDead(targetUnitID)) then
+								--if(rearLineTargetUnitID ~= targetUnitID) then
+									
+									Spring.GiveOrderToUnit(rareLineUnitID, CMD.ATTACK, { targetUnitID }, {})
+									--Spring.GiveOrderToUnit(rareLineUnitID, CMD.INSERT,{-1, CMD.ATTACK, CMD.OPT_SHIFT, targetUnitID}, {});
+									--Spring.Echo(tostring(frame).."Order rearLine unut to ATTACK: "..dumpObject(targetUnitID))
+									--break
 								end
 							end
+
+							-- сheck distance between all rear line units and front unit
+							-- if all rear line are so far so front line unnit should wait for them
+
+							if(distanceBetweenFrontAndRear < distanceBetweenFrontAndRearThreshold) then
+								allRearLineUnitsAreFar = false
+							end
+
 						end
 					end
+
+					--if(allRearLineUnitsAreFar) then
+						--Spring.GiveOrderToUnit(frontLineUnitID, CMD.GATHERWAIT, {}, {})
+						--Spring.Echo(tostring(frame).."Order frontLine unut to WAIT: "..dumpObject(frontLineUnitID))
+					--else
+						--Spring.Echo(tostring(frame).."Order frontLine unut to STOP WAIT: "..dumpObject(frontLineUnitID))
+					--end
+
 				end
 			end
 		end
 	end
-end
-
-function UnitHasCommand(unitID, cmdID, cmdParams)
-
-	local actualUnitCommands = Spring.GetUnitCommands(unitID, 1000)
-
-	for i, cmd in ipairs(actualUnitCommands) do
-		if(cmdID == cmd.id) then		
-			if(cmd.params and cmdParams) then
-
-				if( IsNumber(cmdParams) or IsNumber(cmd.params) ) then
-					if(cmdParams == cmd.params) then
-						return true
-					end
-				else
-					if(cmd.params[1] == cmdParams[1] and cmd.params[2] == cmdParams[2] and cmd.params[3] == cmdParams[3]) then
-						return true
-					end
-				end
-			end
-		end
-	end
-
-	return false
-
 end
 
 function SetFactoryCommandsToUnitsGroup(factID)
@@ -267,10 +327,11 @@ function SetFactoryCommandsToUnitsGroup(factID)
 	end
 
 	for i, cmd in ipairs(factoryCommands) do
-		local cmdOptions = cmd.options
-		local order = { cmd.id, cmd.params, cmdOptions }
+		local order = { cmd.id, cmd.params, cmd.options }
 		table.insert(orderArray, order)
 	end
+
+	--Spring.Echo("orderArray: "..dumpObject(orderArray))
 
 	--Sort units by health
 	local unitsValues = {}
@@ -308,7 +369,6 @@ function SetFactoryCommandsToUnitsGroup(factID)
 	local rearLineUnitsIds = SelectFromArrayValues(rearLineOfGroup, function(a) return a.unitID end)
 
 	if(#frontLineOfGroup == 1 or #frontLineOfGroup >= #rearLineOfGroup) then
-
 
 		--Save guard target unitID
 		for index, unitValue in ipairs(rearLineOfGroup) do
@@ -398,6 +458,11 @@ function IsBuilder(unitDefID)
 	or (unitDef.canRepair and unitDef.repairSpeed > 0) or (unitDef.buildOptions and unitDef.buildOptions[1])
 end
 
+function IsFlying(unitDefID)
+	local unitDef = UnitDefs[unitDefID]
+	return unitDef.canFly
+end
+
 function IsFactoryExperimental(factDefID)
 	
 	local factDef = UnitDefs[factDefID]
@@ -474,7 +539,7 @@ function GetDistance(unitID1, unitID2)
         local distance = math.sqrt(dx * dx + dy * dy + dz * dz)
         return distance
     else
-        return nil  -- One or both units do not exist or have no position
+        return nil
     end
 end
 
